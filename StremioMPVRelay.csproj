@@ -11,15 +11,7 @@
     </PropertyGroup>
 
     <ItemGroup>
-        <None Update="StremioMPVRelay.settings.json">
-            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-        </None>
-
         <None Update="Resources\stremio-mpv-speed-controls.lua">
-            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-        </None>
-
-        <None Update="StremioMpvLibrary.json">
             <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
         </None>
     </ItemGroup>

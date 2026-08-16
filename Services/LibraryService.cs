@@ -5,14 +5,17 @@ namespace StremioMPVRelay.Services;
 
 public sealed class LibraryService
 {
+    private const string LibraryFileName =
+        "StremioMpvLibrary.json";
+
     private readonly string _libraryPath;
     private readonly SemaphoreSlim _gate = new(1, 1);
 
     public LibraryService()
     {
         _libraryPath = Path.Combine(
-            AppContext.BaseDirectory,
-            "StremioMpvLibrary.json");
+            GetDataDirectory(),
+            LibraryFileName);
     }
 
     public string LibraryPath => _libraryPath;
@@ -29,7 +32,8 @@ public sealed class LibraryService
 
         try
         {
-            return await LoadUnlockedAsync(cancellationToken);
+            return await LoadUnlockedAsync(
+                cancellationToken);
         }
         finally
         {
@@ -47,8 +51,7 @@ public sealed class LibraryService
 
         try
         {
-            await AtomicJsonFile.WriteAsync(
-                _libraryPath,
+            await SaveUnlockedAsync(
                 library,
                 cancellationToken);
         }
@@ -61,10 +64,12 @@ public sealed class LibraryService
     public async Task<IReadOnlyList<SeriesEntry>> GetSeriesAsync(
         CancellationToken cancellationToken = default)
     {
-        var library = await LoadAsync(cancellationToken);
+        var library =
+            await LoadAsync(cancellationToken);
 
         return library.Items
-            .OrderByDescending(x => x.UpdatedAt)
+            .OrderByDescending(
+                entry => entry.UpdatedAt)
             .ToList();
     }
 
@@ -73,14 +78,13 @@ public sealed class LibraryService
         int season,
         CancellationToken cancellationToken = default)
     {
-        var library = await LoadAsync(cancellationToken);
+        var library =
+            await LoadAsync(cancellationToken);
 
-        return library.Items.FirstOrDefault(x =>
-            string.Equals(
-                x.ImdbId,
-                imdbId,
-                StringComparison.OrdinalIgnoreCase) &&
-            x.Season == season);
+        return FindEntry(
+            library,
+            imdbId,
+            season);
     }
 
     public async Task<SeriesEntry> GetOrCreateAsync(
@@ -91,18 +95,21 @@ public sealed class LibraryService
         int lastEpisode,
         CancellationToken cancellationToken = default)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(imdbId);
+
         await _gate.WaitAsync(cancellationToken);
 
         try
         {
-            var library = await LoadUnlockedAsync(cancellationToken);
+            var library =
+                await LoadUnlockedAsync(
+                    cancellationToken);
 
-            var entry = library.Items.FirstOrDefault(x =>
-                string.Equals(
-                    x.ImdbId,
+            var entry =
+                FindEntry(
+                    library,
                     imdbId,
-                    StringComparison.OrdinalIgnoreCase) &&
-                x.Season == season);
+                    season);
 
             if (entry is null)
             {
@@ -120,16 +127,14 @@ public sealed class LibraryService
             }
             else
             {
-                if (!string.IsNullOrWhiteSpace(title))
-                    entry.Title = title;
-
-                entry.CurrentEpisode = currentEpisode;
-                entry.LastEpisode = lastEpisode;
-                entry.UpdatedAt = DateTimeOffset.Now;
+                UpdateSeriesMetadata(
+                    entry,
+                    title,
+                    currentEpisode,
+                    lastEpisode);
             }
 
-            await AtomicJsonFile.WriteAsync(
-                _libraryPath,
+            await SaveUnlockedAsync(
                 library,
                 cancellationToken);
 
@@ -141,7 +146,7 @@ public sealed class LibraryService
         }
     }
 
-    public async Task UpdateCurrentEpisodeAsync(
+    public Task UpdateCurrentEpisodeAsync(
         string imdbId,
         string title,
         int season,
@@ -149,7 +154,7 @@ public sealed class LibraryService
         int lastEpisode,
         CancellationToken cancellationToken = default)
     {
-        await GetOrCreateAsync(
+        return GetOrCreateAsync(
             imdbId,
             title,
             season,
@@ -169,18 +174,21 @@ public sealed class LibraryService
         bool completed,
         CancellationToken cancellationToken = default)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(imdbId);
+
         await _gate.WaitAsync(cancellationToken);
 
         try
         {
-            var library = await LoadUnlockedAsync(cancellationToken);
+            var library =
+                await LoadUnlockedAsync(
+                    cancellationToken);
 
-            var entry = library.Items.FirstOrDefault(x =>
-                string.Equals(
-                    x.ImdbId,
+            var entry =
+                FindEntry(
+                    library,
                     imdbId,
-                    StringComparison.OrdinalIgnoreCase) &&
-                x.Season == season);
+                    season);
 
             if (entry is null)
             {
@@ -190,41 +198,57 @@ public sealed class LibraryService
                     Title = title,
                     Season = season,
                     CurrentEpisode = episode,
-                    LastEpisode = lastEpisode
+                    LastEpisode = lastEpisode,
+                    UpdatedAt = DateTimeOffset.Now
                 };
 
                 library.Items.Add(entry);
             }
 
             if (!string.IsNullOrWhiteSpace(title))
-                entry.Title = title;
-
-            entry.LastEpisode = lastEpisode;
-
-            var key = $"S{season}:E{episode}";
-
-            entry.Progress[key] = new EpisodeProgress
             {
-                PositionSeconds = completed
-                    ? 0
-                    : Math.Max(0, positionSeconds),
+                entry.Title = title;
+            }
 
-                DurationSeconds = Math.Max(0, durationSeconds),
+            entry.LastEpisode =
+                lastEpisode;
 
-                Completed = completed,
+            string progressKey =
+                BuildProgressKey(
+                    season,
+                    episode);
 
-                UpdatedAt = DateTimeOffset.Now
-            };
+            entry.Progress[progressKey] =
+                new EpisodeProgress
+                {
+                    PositionSeconds =
+                        completed
+                            ? 0
+                            : Math.Max(
+                                0,
+                                positionSeconds),
 
-            if (completed && episode < lastEpisode)
-                entry.CurrentEpisode = episode + 1;
-            else
-                entry.CurrentEpisode = episode;
+                    DurationSeconds =
+                        Math.Max(
+                            0,
+                            durationSeconds),
 
-            entry.UpdatedAt = DateTimeOffset.Now;
+                    Completed =
+                        completed,
 
-            await AtomicJsonFile.WriteAsync(
-                _libraryPath,
+                    UpdatedAt =
+                        DateTimeOffset.Now
+                };
+
+            entry.CurrentEpisode =
+                completed && episode < lastEpisode
+                    ? episode + 1
+                    : episode;
+
+            entry.UpdatedAt =
+                DateTimeOffset.Now;
+
+            await SaveUnlockedAsync(
                 library,
                 cancellationToken);
         }
@@ -240,17 +264,25 @@ public sealed class LibraryService
         int episode,
         CancellationToken cancellationToken = default)
     {
-        var entry = await FindAsync(
-            imdbId,
-            season,
-            cancellationToken);
+        var entry =
+            await FindAsync(
+                imdbId,
+                season,
+                cancellationToken);
 
         if (entry is null)
+        {
             return null;
+        }
 
-        var key = $"S{season}:E{episode}";
+        string progressKey =
+            BuildProgressKey(
+                season,
+                episode);
 
-        return entry.Progress.TryGetValue(key, out var progress)
+        return entry.Progress.TryGetValue(
+            progressKey,
+            out var progress)
             ? progress
             : null;
     }
@@ -259,13 +291,84 @@ public sealed class LibraryService
         CancellationToken cancellationToken)
     {
         if (!File.Exists(_libraryPath))
+        {
             return new LibraryFile();
+        }
 
         var library =
             await AtomicJsonFile.ReadAsync<LibraryFile>(
                 _libraryPath,
                 cancellationToken);
 
-        return library ?? new LibraryFile();
+        return library
+               ?? new LibraryFile();
+    }
+
+    private Task SaveUnlockedAsync(
+        LibraryFile library,
+        CancellationToken cancellationToken)
+    {
+        return AtomicJsonFile.WriteAsync(
+            _libraryPath,
+            library,
+            cancellationToken);
+    }
+
+    private static SeriesEntry? FindEntry(
+        LibraryFile library,
+        string imdbId,
+        int season)
+    {
+        return library.Items.FirstOrDefault(
+            entry =>
+                string.Equals(
+                    entry.ImdbId,
+                    imdbId,
+                    StringComparison.OrdinalIgnoreCase)
+                && entry.Season == season);
+    }
+
+    private static void UpdateSeriesMetadata(
+        SeriesEntry entry,
+        string title,
+        int currentEpisode,
+        int lastEpisode)
+    {
+        if (!string.IsNullOrWhiteSpace(title))
+        {
+            entry.Title = title;
+        }
+
+        entry.CurrentEpisode =
+            currentEpisode;
+
+        entry.LastEpisode =
+            lastEpisode;
+
+        entry.UpdatedAt =
+            DateTimeOffset.Now;
+    }
+
+    private static string BuildProgressKey(
+        int season,
+        int episode)
+    {
+        return $"S{season}:E{episode}";
+    }
+
+    private static string GetDataDirectory()
+    {
+#if DEBUG
+        // Rider/Visual Studio Debug build:
+        // bin\Debug\net8.0-windows -> project root.
+        return Path.GetFullPath(
+            Path.Combine(
+                AppContext.BaseDirectory,
+                "..",
+                "..",
+                ".."));
+#else
+
+#endif
     }
 }

@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using StremioMPVRelay.Infrastructure;
 using StremioMPVRelay.Models;
 
@@ -21,11 +23,41 @@ public sealed class SettingsService
     {
         try
         {
-            var settings = await AtomicJsonFile.ReadAsync<AppSettings>(
-                _settingsPath,
-                cancellationToken);
+            var settings =
+                await AtomicJsonFile.ReadAsync<AppSettings>(
+                    _settingsPath,
+                    cancellationToken)
+                ?? new AppSettings();
 
-            return settings ?? new AppSettings();
+            if (!settings.RememberManifest)
+            {
+                settings.ManifestUrl =
+                    string.Empty;
+
+                return settings;
+            }
+
+            if (!string.IsNullOrWhiteSpace(
+                    settings.ManifestProtected))
+            {
+                try
+                {
+                    settings.ManifestUrl =
+                        UnprotectManifest(
+                            settings.ManifestProtected);
+                }
+                catch
+                {
+                    // Keep the rest of the settings even if an old
+                    // protected manifest cannot be decrypted.
+                    settings.ManifestUrl =
+                        string.Empty;
+                }
+            }
+
+            // If ManifestProtected is empty, leave ManifestUrl alone.
+            // This lets older plaintext settings migrate on the next save.
+            return settings;
         }
         catch
         {
@@ -33,26 +65,94 @@ public sealed class SettingsService
         }
     }
 
-    public Task SaveAsync(
+    public async Task SaveAsync(
         AppSettings settings,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(settings);
 
-        return AtomicJsonFile.WriteAsync(
-            _settingsPath,
-            settings,
-            cancellationToken);
+        string manifestUrl =
+            settings.ManifestUrl;
+
+        if (settings.RememberManifest &&
+            !string.IsNullOrWhiteSpace(
+                manifestUrl))
+        {
+            settings.ManifestProtected =
+                ProtectManifest(
+                    manifestUrl);
+        }
+        else
+        {
+            settings.ManifestProtected =
+                string.Empty;
+        }
+
+        // Never write the manifest URL to disk in plaintext.
+        settings.ManifestUrl =
+            string.Empty;
+
+        try
+        {
+            await AtomicJsonFile.WriteAsync(
+                _settingsPath,
+                settings,
+                cancellationToken);
+        }
+        finally
+        {
+            // Keep it available to the running UI.
+            settings.ManifestUrl =
+                manifestUrl;
+        }
     }
 
     public bool Exists()
     {
-        return File.Exists(_settingsPath);
+        return File.Exists(
+            _settingsPath);
     }
 
-    public bool MpvExists(AppSettings settings)
+    public bool MpvExists(
+        AppSettings settings)
     {
-        return !string.IsNullOrWhiteSpace(settings.MpvPath)
-               && File.Exists(settings.MpvPath);
+        return !string.IsNullOrWhiteSpace(
+                   settings.MpvPath)
+               && File.Exists(
+                   settings.MpvPath);
+    }
+
+    private static string ProtectManifest(
+        string manifestUrl)
+    {
+        byte[] plainBytes =
+            Encoding.UTF8.GetBytes(
+                manifestUrl);
+
+        byte[] protectedBytes =
+            ProtectedData.Protect(
+                plainBytes,
+                optionalEntropy: null,
+                DataProtectionScope.CurrentUser);
+
+        return Convert.ToBase64String(
+            protectedBytes);
+    }
+
+    private static string UnprotectManifest(
+        string protectedManifest)
+    {
+        byte[] protectedBytes =
+            Convert.FromBase64String(
+                protectedManifest);
+
+        byte[] plainBytes =
+            ProtectedData.Unprotect(
+                protectedBytes,
+                optionalEntropy: null,
+                DataProtectionScope.CurrentUser);
+
+        return Encoding.UTF8.GetString(
+            plainBytes);
     }
 }
