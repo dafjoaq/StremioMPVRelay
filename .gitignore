@@ -8,3 +8,4 @@ bin/
 obj/
 StremioMPVRelay.settings.json
 StremioMpvLibrary.json
+devNotes.md
