@@ -1,12 +1,12 @@
 # stremioMPVRelay
 
-basically a small Windows app i made that sends Stremio Torrentio addon streams to MPV so i don't have to keep reopening videos in an external player (i use MPV).
+basically a small Windows app i made that sends Stremio Torrentio addon streams to MPV so i don't have to keep reopening videos in my favorite external player (i use MPV).
 
-i made this for C# practice, so i imagine it's not really that usable for others. i'm pretty sure you can make a better version yourself lolol i'll update mine tho and i'll improve it as i learn
+i made this for C# practice and for myself, so i imagine it's not really that usable for others. tho i'll still get this out so im sure someones bound to make a better version or tell me off for a better way lolol i'll still update mine tho and i'll improve it as i learn
 
 ## how to use
 
-1. paste your Stremio / Torrentio addon manifest URL
+1. paste your Stremio / Torrentio addon manifest URL (**the configure Torrentio page `torrentio.strem.fun`; click `Copy Link` right under install**)
 2. select your `mpv.exe`
 3. enter the IMDb ID for the show you want to watch  
    example: `https://www.imdb.com/title/<ID>/`
