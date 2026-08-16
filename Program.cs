@@ -15,6 +15,9 @@ internal static class Program
         var libraryService =
             new LibraryService();
 
+        using var cinemetaService =
+            new CinemetaService();
+
         using var addonService =
             new StremioAddonService();
 
@@ -36,6 +39,7 @@ internal static class Program
                 new MainForm(
                     settingsService,
                     libraryService,
+                    cinemetaService,
                     mpvService,
                     rollingQueueService));
         }

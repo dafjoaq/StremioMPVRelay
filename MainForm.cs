@@ -6,25 +6,33 @@ namespace StremioMPVRelay;
 
 public partial class MainForm : Form
 {
+    
     private readonly SettingsService _settingsService;
     private readonly LibraryService _libraryService;
+    private readonly CinemetaService _cinemetaService;
     private readonly MpvService _mpvService;
     private readonly RollingQueueService _rollingQueueService;
+    private readonly SemaphoreSlim _metadataLookupGate = new(1, 1);
 
     private AppSettings _settings = new();
+    private CinemetaSeriesMetadata? _cinemetaMetadata;
 
     private bool _loading;
     private bool _loadingLibrary;
+    private bool _applyingLibrary;
+    private bool _applyingMetadata;
     private bool _closing;
 
     public MainForm(
         SettingsService settingsService,
         LibraryService libraryService,
+        CinemetaService cinemetaService,
         MpvService mpvService,
         RollingQueueService rollingQueueService)
     {
         _settingsService = settingsService;
         _libraryService = libraryService;
+        _cinemetaService = cinemetaService;
         _mpvService = mpvService;
         _rollingQueueService = rollingQueueService;
 
@@ -35,6 +43,15 @@ public partial class MainForm : Form
 
         btnRefreshLibrary.Click +=
             btnRefreshLibrary_Click;
+
+        txtImdbId.Leave +=
+            txtImdbId_Leave;
+
+        txtImdbId.KeyDown +=
+            txtImdbId_KeyDown;
+
+        numSeason.ValueChanged +=
+            numSeason_ValueChanged;
 
         SubscribeToEvents();
 
@@ -235,6 +252,9 @@ public partial class MainForm : Form
         try
         {
             ToggleBusy(true);
+
+            await LookupImdbMetadataAsync(
+                showErrors: false);
 
             ReadControlsIntoSettings();
 
@@ -638,6 +658,244 @@ public partial class MainForm : Form
             });
     }
 
+    private async void txtImdbId_Leave(
+        object? sender,
+        EventArgs e)
+    {
+        await LookupImdbMetadataAsync(
+            showErrors: false);
+    }
+
+    private async void txtImdbId_KeyDown(
+        object? sender,
+        KeyEventArgs e)
+    {
+        if (e.KeyCode != Keys.Enter)
+            return;
+
+        e.SuppressKeyPress = true;
+        e.Handled = true;
+
+        await LookupImdbMetadataAsync(
+            showErrors: true);
+    }
+
+    private async void numSeason_ValueChanged(
+        object? sender,
+        EventArgs e)
+    {
+        if (_loading ||
+            _loadingLibrary ||
+            _applyingLibrary ||
+            _applyingMetadata ||
+            _closing)
+        {
+            return;
+        }
+
+        string imdbId =
+            txtImdbId.Text.Trim();
+
+        if (!Regex.IsMatch(
+                imdbId,
+                @"^tt\d+$",
+                RegexOptions.IgnoreCase))
+        {
+            return;
+        }
+
+        if (_cinemetaMetadata is not null &&
+            string.Equals(
+                _cinemetaMetadata.ImdbId,
+                imdbId,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            await ApplyMetadataForCurrentSeasonAsync(
+                _cinemetaMetadata);
+
+            return;
+        }
+
+        await LookupImdbMetadataAsync(
+            showErrors: false);
+    }
+
+    private async Task LookupImdbMetadataAsync(
+        bool showErrors)
+    {
+        if (_loading ||
+            _loadingLibrary ||
+            _applyingLibrary ||
+            _closing)
+        {
+            return;
+        }
+
+        string requestedImdbId =
+            txtImdbId.Text.Trim();
+
+        if (string.IsNullOrWhiteSpace(
+                requestedImdbId))
+        {
+            return;
+        }
+
+        if (!Regex.IsMatch(
+                requestedImdbId,
+                @"^tt\d+$",
+                RegexOptions.IgnoreCase))
+        {
+            if (showErrors)
+            {
+                MessageBox.Show(
+                    this,
+                    "IMDb ID must look like tt0202430.",
+                    "StremioMPVRelay",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+            }
+
+            return;
+        }
+
+        await _metadataLookupGate.WaitAsync();
+
+        try
+        {
+            if (_closing)
+                return;
+
+            string currentImdbId =
+                txtImdbId.Text.Trim();
+
+            if (!string.Equals(
+                    requestedImdbId,
+                    currentImdbId,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            if (_cinemetaMetadata is null ||
+                !string.Equals(
+                    _cinemetaMetadata.ImdbId,
+                    currentImdbId,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                AddLog(
+                    "Looking up " +
+                    currentImdbId +
+                    "...");
+
+                _cinemetaMetadata =
+                    await _cinemetaService
+                        .GetSeriesMetadataAsync(
+                            currentImdbId);
+            }
+
+            _applyingMetadata = true;
+
+            try
+            {
+                txtTitle.Text =
+                    _cinemetaMetadata.Title;
+
+                int selectedSeason =
+                    decimal.ToInt32(
+                        numSeason.Value);
+
+                if (!_cinemetaMetadata.EpisodeCounts.ContainsKey(
+                        selectedSeason))
+                {
+                    int firstAvailableSeason =
+                        _cinemetaMetadata.EpisodeCounts.Keys
+                            .OrderBy(x => x)
+                            .First();
+
+                    numSeason.Value =
+                        ClampDecimal(
+                            firstAvailableSeason,
+                            numSeason.Minimum,
+                            numSeason.Maximum);
+                }
+
+                await ApplyMetadataForCurrentSeasonAsync(
+                    _cinemetaMetadata);
+            }
+            finally
+            {
+                _applyingMetadata = false;
+            }
+
+            AddLog(
+                "Detected: " +
+                _cinemetaMetadata.Title);
+        }
+        catch (Exception ex)
+        {
+            if (showErrors)
+            {
+                ShowError(
+                    "Could not look up the IMDb ID.",
+                    ex);
+            }
+            else
+            {
+                AddLog(
+                    "IMDb lookup failed: " +
+                    ex.Message);
+            }
+        }
+        finally
+        {
+            _metadataLookupGate.Release();
+        }
+    }
+
+    private async Task ApplyMetadataForCurrentSeasonAsync(
+        CinemetaSeriesMetadata metadata)
+    {
+        int season =
+            decimal.ToInt32(
+                numSeason.Value);
+
+        if (!metadata.EpisodeCounts.TryGetValue(
+                season,
+                out int lastEpisode))
+        {
+            return;
+        }
+
+        SeriesEntry? libraryEntry =
+            await _libraryService.FindAsync(
+                metadata.ImdbId,
+                season);
+
+        int firstEpisode =
+            libraryEntry?.CurrentEpisode ?? 1;
+
+        firstEpisode =
+            Math.Clamp(
+                firstEpisode,
+                1,
+                lastEpisode);
+
+        txtTitle.Text =
+            metadata.Title;
+
+        numFirstEpisode.Value =
+            ClampDecimal(
+                firstEpisode,
+                numFirstEpisode.Minimum,
+                numFirstEpisode.Maximum);
+
+        numLastEpisode.Value =
+            ClampDecimal(
+                lastEpisode,
+                numLastEpisode.Minimum,
+                numLastEpisode.Maximum);
+    }
+
     private async Task RefreshLibraryAsync()
     {
         _loadingLibrary = true;
@@ -761,37 +1019,46 @@ public partial class MainForm : Form
     private void ApplyLibraryEntry(
         SeriesEntry entry)
     {
-        txtImdbId.Text =
-            entry.ImdbId;
+        _applyingLibrary = true;
 
-        txtTitle.Text =
-            entry.Title;
+        try
+        {
+            txtImdbId.Text =
+                entry.ImdbId;
 
-        numSeason.Value =
-            ClampDecimal(
-                entry.Season,
-                numSeason.Minimum,
-                numSeason.Maximum);
+            txtTitle.Text =
+                entry.Title;
 
-        numFirstEpisode.Value =
-            ClampDecimal(
-                entry.CurrentEpisode,
-                numFirstEpisode.Minimum,
-                numFirstEpisode.Maximum);
+            numSeason.Value =
+                ClampDecimal(
+                    entry.Season,
+                    numSeason.Minimum,
+                    numSeason.Maximum);
 
-        numLastEpisode.Value =
-            ClampDecimal(
-                entry.LastEpisode,
-                numLastEpisode.Minimum,
-                numLastEpisode.Maximum);
+            numFirstEpisode.Value =
+                ClampDecimal(
+                    entry.CurrentEpisode,
+                    numFirstEpisode.Minimum,
+                    numFirstEpisode.Maximum);
 
-        AddLog(
-            "Loaded from history: " +
-            entry.Title +
-            " S" +
-            entry.Season +
-            " E" +
-            entry.CurrentEpisode);
+            numLastEpisode.Value =
+                ClampDecimal(
+                    entry.LastEpisode,
+                    numLastEpisode.Minimum,
+                    numLastEpisode.Maximum);
+
+            AddLog(
+                "Loaded from history: " +
+                entry.Title +
+                " S" +
+                entry.Season +
+                " E" +
+                entry.CurrentEpisode);
+        }
+        finally
+        {
+            _applyingLibrary = false;
+        }
     }
 
     private async Task UpdateLibraryCurrentEpisodeSafeAsync(
