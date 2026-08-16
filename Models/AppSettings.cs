@@ -8,6 +8,9 @@ public sealed class AppSettings
 
     public string ManifestProtected { get; set; } = string.Empty;
 
+    // Used by the UI while the app is running.
+    // SettingsService clears this before writing the JSON file so the
+    // manifest is never stored on disk in plaintext.
     public string ManifestUrl { get; set; } = string.Empty;
 
     public string Quality { get; set; } = "1080p";

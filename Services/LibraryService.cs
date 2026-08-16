@@ -359,8 +359,6 @@ public sealed class LibraryService
     private static string GetDataDirectory()
     {
 #if DEBUG
-        // Rider/Visual Studio Debug build:
-        // bin\Debug\net8.0-windows -> project root.
         return Path.GetFullPath(
             Path.Combine(
                 AppContext.BaseDirectory,
@@ -368,7 +366,7 @@ public sealed class LibraryService
                 "..",
                 ".."));
 #else
-
+    return AppContext.BaseDirectory;
 #endif
     }
 }
